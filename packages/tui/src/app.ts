@@ -37,6 +37,7 @@ export interface TreeTuiOptions {
 	sessionStore: SessionStore;
 	initialPrompt?: string;
 	startupNotices?: string[];
+	yolo?: boolean;
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -97,6 +98,8 @@ export class TreeTuiApp {
 	private activeAssistant?: Text;
 	private activeAssistantText = "";
 	private pendingApprovals = new Map<string, ContinueRunInput>();
+	private awaitingApproval?: string;
+	private approvalLabels = new Map<string, string>();
 	private readonly done: Promise<void>;
 	private resolveDone!: () => void;
 	private stopped = false;
@@ -165,6 +168,14 @@ export class TreeTuiApp {
 	private async handleSubmit(text: string): Promise<void> {
 		const trimmed = text.trim();
 		if (!trimmed) return;
+		if (this.awaitingApproval) {
+			const verdict = parseApprovalAnswer(trimmed);
+			if (verdict !== undefined) {
+				const id = this.awaitingApproval;
+				await this.resolveApproval(id, verdict);
+				return;
+			}
+		}
 		if (trimmed.startsWith("/")) {
 			await this.handleCommand(trimmed);
 			return;
@@ -247,11 +258,11 @@ export class TreeTuiApp {
 				});
 				break;
 			case "tool_started": {
-				const args = event.args ? JSON.stringify(event.args) : "";
-				const trimmed = args.length > 80 ? `${args.slice(0, 77)}...` : args;
+				const summary = summarizeTool(event.name, event.args);
 				this.messages.addChild(
 					new Text(
-						role.tool(event.name) + (trimmed ? chalk.dim(` ${trimmed}`) : ""),
+						role.tool(summary.title) +
+							(summary.detail ? chalk.dim(` ${summary.detail}`) : ""),
 						0,
 						0,
 					),
@@ -259,7 +270,9 @@ export class TreeTuiApp {
 				break;
 			}
 			case "tool_completed":
-				this.messages.addChild(new Text(role.toolDone(event.name), 0, 0));
+				this.messages.addChild(
+					new Text(role.toolDone(prettyToolName(event.name)), 0, 0),
+				);
 				break;
 			case "approval_requested": {
 				const key = event.approvalId ?? event.toolCallId ?? event.runId;
@@ -269,12 +282,40 @@ export class TreeTuiApp {
 					approvalId: event.approvalId,
 					approved: true,
 				});
+				const summary = summarizeTool(event.toolName ?? "tool", event.toolArgs);
+				this.approvalLabels.set(key, summary.title);
+				if (this.options.yolo) {
+					this.messages.addChild(
+						new Text(
+							role.toolDone("auto-approved") + chalk.dim(` · ${summary.title}`),
+							0,
+							0,
+						),
+					);
+					this.ui.requestRender();
+					void this.resolveApproval(key, true);
+					break;
+				}
+				this.awaitingApproval = key;
+				this.statusLoader?.setMessage(
+					"awaiting approval — press y to approve, n to reject",
+				);
+				this.messages.addChild(new Spacer(1));
+				this.messages.addChild(
+					new Text(role.warn(`approval required · ${summary.title}`), 0, 0),
+				);
+				if (summary.detail) {
+					this.messages.addChild(
+						new Text(chalk.hex(palette.muted)(`  ${summary.detail}`), 0, 0),
+					);
+				}
 				this.messages.addChild(
 					new Text(
-						role.warn(`approval required ${key}`) +
-							chalk.dim(
-								` ${event.toolName ?? "tool"} · /approve ${key} or /reject ${key}`,
-							),
+						chalk.hex(palette.subtle)("  press ") +
+							chalk.bold.hex(palette.leaf)("y") +
+							chalk.hex(palette.subtle)(" to approve · ") +
+							chalk.bold.hex(palette.red)("n") +
+							chalk.hex(palette.subtle)(" to reject"),
 						0,
 						0,
 					),
@@ -364,10 +405,10 @@ export class TreeTuiApp {
 				await this.cancel();
 				return;
 			case "/approve":
-				await this.resolveApproval(args[0], true);
+				await this.resolveApproval(args[0] ?? this.awaitingApproval, true);
 				return;
 			case "/reject":
-				await this.resolveApproval(args[0], false);
+				await this.resolveApproval(args[0] ?? this.awaitingApproval, false);
 				return;
 			default:
 				await this.appendSystem(`unknown command: ${name}`);
@@ -390,8 +431,9 @@ export class TreeTuiApp {
 			cmd("/agents", "list agents for the active adapter"),
 			cmd("/permissions", "show adapter permissions"),
 			cmd("/cancel", "cancel the active run"),
-			cmd("/approve <id>", "approve a pending tool call"),
-			cmd("/reject <id>", "reject a pending tool call"),
+			cmd("y / n", "approve or reject a pending tool call"),
+			cmd("/approve [id]", "approve by id (defaults to oldest)"),
+			cmd("/reject [id]", "reject by id (defaults to oldest)"),
 			cmd("/help", "show this help"),
 		];
 		return lines.join("\n");
@@ -574,6 +616,32 @@ export class TreeTuiApp {
 			return;
 		}
 		this.pendingApprovals.delete(id);
+		const label = this.approvalLabels.get(id);
+		this.approvalLabels.delete(id);
+		if (this.awaitingApproval === id) {
+			this.awaitingApproval = this.nextPendingApprovalId();
+		}
+		if (this.awaitingApproval) {
+			const nextLabel = this.approvalLabels.get(this.awaitingApproval);
+			this.statusLoader?.setMessage(
+				nextLabel
+					? `awaiting approval — ${nextLabel} (y/n)`
+					: "awaiting approval — press y / n",
+			);
+		} else if (this.working) {
+			this.statusLoader?.setMessage("thinking...");
+		}
+		this.messages.addChild(
+			new Text(
+				(approved
+					? role.toolDone("approved")
+					: role.error("rejected")) +
+					(label ? chalk.dim(` · ${label}`) : ""),
+				0,
+				0,
+			),
+		);
+		this.ui.requestRender();
 		for await (const event of adapter.continueRun(
 			this.adapterSession,
 			{ ...input, approved },
@@ -581,6 +649,11 @@ export class TreeTuiApp {
 		)) {
 			await this.handleEvent(event);
 		}
+	}
+
+	private nextPendingApprovalId(): string | undefined {
+		const first = this.pendingApprovals.keys().next();
+		return first.done ? undefined : first.value;
 	}
 
 	private roleHeader(roleName: string): string {
@@ -633,6 +706,9 @@ export class TreeTuiApp {
 		this.messages.addChild(new Spacer(1));
 		this.messages.addChild(new WelcomeBanner(() => this.activeAdapter));
 		this.messages.addChild(new Spacer(1));
+		if (this.options.yolo) {
+			this.messages.addChild(new Text(role.warn("YOLO mode"), 0, 0));
+		}
 		for (const notice of this.options.startupNotices ?? []) {
 			this.messages.addChild(new Text(chalk.dim(notice), 0, 0));
 		}
@@ -685,4 +761,130 @@ export class TreeTuiApp {
 		}
 		this.resolveDone();
 	}
+}
+
+function parseApprovalAnswer(input: string): boolean | undefined {
+	const lower = input.toLowerCase();
+	if (["y", "yes", "approve", "ok", "allow"].includes(lower)) return true;
+	if (["n", "no", "reject", "deny", "cancel"].includes(lower)) return false;
+	return undefined;
+}
+
+function canonicalToolName(name: string): string {
+	const match = name.match(/^item\/([a-zA-Z]+)\//);
+	if (match) return match[1];
+	if (name === "applyPatchApproval") return "fileChange";
+	if (name === "execCommandApproval") return "commandExecution";
+	return name;
+}
+
+function prettyToolName(name: string): string {
+	switch (name) {
+		case "commandExecution":
+			return "command";
+		case "fileChange":
+			return "edit";
+		case "dynamicToolCall":
+			return "tool";
+		case "mcpToolCall":
+			return "mcp tool";
+		case "webSearch":
+			return "search";
+		case "collabToolCall":
+			return "collab";
+		default:
+			return name;
+	}
+}
+
+interface ToolSummary {
+	title: string;
+	detail?: string;
+}
+
+function summarizeTool(name: string, args: unknown): ToolSummary {
+	const canonical = canonicalToolName(name);
+	const pretty = prettyToolName(canonical);
+	const obj = isRecord(args) ? args : {};
+	switch (canonical) {
+		case "commandExecution": {
+			const command = coerceCommand(obj.command);
+			return { title: command ? `ran ${shortCommand(command)}` : pretty, detail: command };
+		}
+		case "fileChange": {
+			const path =
+				strProp(obj, "path") ??
+				strProp(obj, "file") ??
+				summarizeFileList(obj.changes ?? obj.files);
+			return { title: path ? `edit ${path}` : pretty, detail: strProp(obj, "reason") };
+		}
+		case "dynamicToolCall":
+		case "mcpToolCall": {
+			const toolName = strProp(obj, "name") ?? pretty;
+			const argsPreview =
+				strProp(obj, "arguments") ?? strProp(obj, "args") ?? jsonPreview(obj.arguments);
+			return { title: toolName, detail: argsPreview };
+		}
+		case "webSearch": {
+			const query = strProp(obj, "query");
+			return { title: query ? `search "${query}"` : pretty };
+		}
+		default: {
+			const preview = jsonPreview(obj);
+			return { title: pretty, detail: preview };
+		}
+	}
+}
+
+function coerceCommand(value: unknown): string | undefined {
+	if (typeof value === "string" && value.length > 0) return value;
+	if (Array.isArray(value)) {
+		const parts = value.filter((v): v is string => typeof v === "string");
+		return parts.length > 0 ? parts.join(" ") : undefined;
+	}
+	return undefined;
+}
+
+function shortCommand(cmd: string): string {
+	const cleaned = cmd
+		.replace(/^\s*\/bin\/(?:zsh|bash|sh)\s+-(?:l?c|c)\s+/, "")
+		.replace(/^['"]/, "")
+		.replace(/['"]$/, "");
+	return truncateLine(cleaned, 100);
+}
+
+function summarizeFileList(value: unknown): string | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const names = value
+		.map((item) => (isRecord(item) ? strProp(item, "path") ?? strProp(item, "file") : undefined))
+		.filter((v): v is string => Boolean(v));
+	if (names.length === 0) return undefined;
+	if (names.length === 1) return names[0];
+	return `${names[0]} (+${names.length - 1} more)`;
+}
+
+function jsonPreview(value: unknown): string | undefined {
+	if (value === undefined || value === null) return undefined;
+	try {
+		const text = typeof value === "string" ? value : JSON.stringify(value);
+		if (!text || text === "{}" || text === "[]") return undefined;
+		return truncateLine(text, 100);
+	} catch {
+		return undefined;
+	}
+}
+
+function truncateLine(text: string, max: number): string {
+	const single = text.replace(/\s+/g, " ").trim();
+	if (single.length <= max) return single;
+	return `${single.slice(0, max - 1)}…`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function strProp(obj: Record<string, unknown>, key: string): string | undefined {
+	const value = obj[key];
+	return typeof value === "string" && value.length > 0 ? value : undefined;
 }

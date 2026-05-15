@@ -144,11 +144,12 @@ export class CodexAdapter implements AgentAdapter {
 			return;
 		}
 		state.serverRequests.delete(approvalId);
-		respond(state, request.id, input.approved === false ? "decline" : "accept");
+		const approved = input.approved !== false;
+		respond(state, request.id, buildApprovalResponse(request.method, approved));
 		yield {
 			type: "log",
 			level: "info",
-			message: `${input.approved === false ? "Rejected" : "Approved"} Codex request ${approvalId}`,
+			message: `${approved ? "Approved" : "Rejected"} Codex request ${approvalId}`,
 			details: request.params,
 		};
 	}
@@ -510,6 +511,24 @@ function normalizeCodexMessage(
 		];
 	}
 	return [];
+}
+
+function buildApprovalResponse(
+	method: string,
+	approved: boolean,
+): Record<string, unknown> {
+	// Codex's app-server uses different decision enums per request type.
+	// See `codex app-server generate-json-schema` for the canonical shapes.
+	switch (method) {
+		case "applyPatchApproval":
+		case "execCommandApproval":
+			return { decision: approved ? "approved" : "denied" };
+		case "item/commandExecution/requestApproval":
+		case "item/fileChange/requestApproval":
+			return { decision: approved ? "accept" : "decline" };
+		default:
+			return { decision: approved ? "accept" : "decline" };
+	}
 }
 
 function sandboxPolicy(

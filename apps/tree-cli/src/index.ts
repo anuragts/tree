@@ -25,6 +25,7 @@ interface CliArgs {
 	exportSession?: string;
 	help: boolean;
 	version: boolean;
+	yolo: boolean;
 }
 
 const VERSION = "0.1.0";
@@ -42,6 +43,7 @@ async function main(argv: string[]): Promise<void> {
 
 	const config = loadTreeConfig({ configPath: args.configPath });
 	if (args.adapter) config.defaultAdapter = args.adapter;
+	if (args.yolo) applyYoloConfig(config);
 	const runtime = createRuntimeHost(config.runtime);
 	const sessionStore = new SessionStore(config.sessionDir);
 	const adapters = createDefaultAdapters();
@@ -89,12 +91,20 @@ async function main(argv: string[]): Promise<void> {
 			return;
 		}
 
+		const startupNotices: string[] = [];
+		if (args.yolo) {
+			startupNotices.push(
+				"YOLO mode · approvals auto-accepted, sandbox disabled. Tools run unrestricted.",
+			);
+		}
 		const app = new TreeTuiApp({
 			config,
 			runtime,
 			adapters,
 			sessionStore,
 			initialPrompt: prompt,
+			yolo: args.yolo,
+			startupNotices,
 		});
 		await app.run();
 	} finally {
@@ -110,6 +120,7 @@ function parseArgs(argv: string[]): CliArgs {
 		sessions: false,
 		help: false,
 		version: false,
+		yolo: false,
 	};
 	const prompt: string[] = [];
 	for (let i = 0; i < argv.length; i++) {
@@ -144,6 +155,10 @@ function parseArgs(argv: string[]): CliArgs {
 			case "--sessions":
 				args.sessions = true;
 				break;
+			case "-y":
+			case "--yolo":
+				args.yolo = true;
+				break;
 			case "--export":
 				args.exportSession = argv[++i];
 				break;
@@ -169,11 +184,27 @@ Usage:
   bun run dev -- --list-agents        List agents for the active adapter
   bun run dev -- --sessions           List local sessions
   bun run dev -- --export <id|file>   Export a session to Markdown
+  bun run dev -- --yolo               Run the adapter unrestricted
+                                        (codex: danger-full-access sandbox,
+                                         claude: bypassPermissions,
+                                         others: auto-approve all approvals)
 
 Interactive commands:
   /new /resume [id] /adapter [id] /agents /permissions /cancel
   /sessions /tree /fork [entryId] /export [file] /approve <id> /reject <id> /help
 `);
+}
+
+function applyYoloConfig(config: TreeConfig): void {
+	config.adapters.codex = {
+		...(config.adapters.codex ?? { mode: "app-server" }),
+		sandbox: "danger-full-access",
+	};
+	config.adapters.claude = {
+		...(config.adapters.claude ?? {}),
+		permissionMode: "bypassPermissions",
+		disallowedTools: [],
+	};
 }
 
 async function readStdin(): Promise<string | undefined> {
