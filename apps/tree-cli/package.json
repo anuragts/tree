@@ -1,0 +1,18 @@
+{
+	"name": "@tree/tree-cli",
+	"version": "0.1.0",
+	"type": "module",
+	"bin": {
+		"tree-agent": "dist/index.js"
+	},
+	"scripts": {
+		"dev": "bun src/index.ts",
+		"build": "tsc -b",
+		"start": "node dist/index.js"
+	},
+	"dependencies": {
+		"@tree/adapters": "workspace:*",
+		"@tree/core": "workspace:*",
+		"@tree/tui": "workspace:*"
+	}
+}

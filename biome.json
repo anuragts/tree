@@ -1,0 +1,17 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab"
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true
+		}
+	},
+	"files": {
+		"ignoreUnknown": true,
+		"includes": ["**", "!node_modules", "!**/dist", "!**/.tree"]
+	}
+}

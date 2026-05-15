@@ -1,0 +1,26 @@
+runtime = "bun"
+defaultAdapter = "agno"
+cwd = "."
+sessionDir = ".tree/sessions"
+
+[adapters.agno]
+baseUrl = "http://localhost:7867"
+agentId = "coding-agent"
+sidecarAutoStart = true
+sidecarHost = "localhost"
+sidecarPort = 7867
+# authToken = "..."
+# sidecarCommand = "TREE_WORKSPACE=. TREE_AGNO_PORT=7867 python agents/agno_coding_agent.py"
+
+[adapters.claude]
+model = "claude-sonnet-4-5"
+allowedTools = ["Read", "Edit", "Bash"]
+disallowedTools = []
+permissionMode = "acceptEdits"
+cwd = "."
+
+[adapters.codex]
+mode = "app-server"
+model = "gpt-5.4"
+sandbox = "workspace-write"
+cwd = "."
