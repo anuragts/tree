@@ -1,14 +1,12 @@
-# Tree Agent
+# Tree Coding Agent
 
-Tree Agent is a local terminal coding-agent scaffold with a Bun-first TypeScript workspace, a terminal UI, persistent sessions, and adapter seams for Agno, Claude, and Codex.
+Tree is an open source coding agent designed to be agnostic and support multiframeworks and swarn of agents.
 
 ## Features
 
 - Interactive terminal UI for coding-agent sessions.
 - Adapter-neutral event model shared by the UI and session store.
-- JSONL session persistence under `.tree/sessions`.
 - Agno AgentOS, Claude, and Codex adapter packages.
-- One-shot print mode for scripting and noninteractive runs.
 
 ## Requirements
 
