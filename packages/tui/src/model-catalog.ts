@@ -2,9 +2,12 @@ import type { SelectItem } from "@earendil-works/pi-tui";
 
 export const MODEL_CATALOG: Record<string, SelectItem[]> = {
 	codex: [
-		{ value: "gpt-5-codex", label: "gpt-5-codex" },
-		{ value: "gpt-5", label: "gpt-5" },
-		{ value: "o4-mini", label: "o4-mini" },
+		{ value: "gpt-5.5", label: "GPT-5.5" },
+		{ value: "gpt-5.4", label: "GPT-5.4" },
+		{ value: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
+		{ value: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
+		{ value: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
+		{ value: "gpt-5.2", label: "GPT-5.2" },
 	],
 	claude: [
 		{ value: "claude-opus-4-7", label: "Opus 4.7" },
@@ -15,6 +18,6 @@ export const MODEL_CATALOG: Record<string, SelectItem[]> = {
 };
 
 export const FAST_MODE_MODELS: Record<string, string[]> = {
-	codex: ["gpt-5-codex", "gpt-5"],
+	codex: ["gpt-5.5", "gpt-5.4"],
 	claude: ["claude-opus-4-7", "claude-opus-4-6"],
 };
