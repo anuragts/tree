@@ -117,6 +117,7 @@ export class TreeTuiApp {
 	private activeAssistant?: Text;
 	private activeAssistantText = "";
 	private pendingApprovals = new Map<string, ContinueRunInput>();
+	private toolMessages = new Map<string, { text: Text; title: string }>();
 	private awaitingApproval?: string;
 	private approvalLabels = new Map<string, string>();
 	private readonly done: Promise<void>;
@@ -278,21 +279,22 @@ export class TreeTuiApp {
 				break;
 			case "tool_started": {
 				const summary = summarizeTool(event.name, event.args);
-				this.messages.addChild(
-					new Text(
-						role.tool(summary.title) +
-							(summary.detail ? chalk.dim(` ${summary.detail}`) : ""),
-						0,
-						0,
-					),
-				);
+				const text = new Text(role.tool(summary.title), 0, 0);
+				this.toolMessages.set(event.toolCallId, {
+					text,
+					title: summary.title,
+				});
+				this.messages.addChild(text);
 				break;
 			}
-			case "tool_completed":
-				this.messages.addChild(
-					new Text(role.toolDone(prettyToolName(event.name)), 0, 0),
-				);
+			case "tool_completed": {
+				const tracked = this.toolMessages.get(event.toolCallId);
+				if (tracked) {
+					tracked.text.setText(role.toolDone(tracked.title));
+					this.toolMessages.delete(event.toolCallId);
+				}
 				break;
+			}
 			case "approval_requested": {
 				const key = event.approvalId ?? event.toolCallId ?? event.runId;
 				this.pendingApprovals.set(key, {
