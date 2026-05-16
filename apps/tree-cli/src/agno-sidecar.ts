@@ -8,8 +8,7 @@ export interface ManagedSidecar {
 	stop(): Promise<void>;
 }
 
-const DEFAULT_AGNO_REPO =
-	process.env.TREE_AGNO_REPO ?? "/Users/anurag/labs/agno";
+const FALLBACK_AGNO_REPO = "/Users/anurag/labs/agno";
 const DEFAULT_AGNO_PORT = 7867;
 
 export async function maybeStartAgnoSidecar(
@@ -112,7 +111,7 @@ function sidecarEnv(config: TreeConfig): Record<string, string | undefined> {
 	const agno = config.adapters.agno;
 	const port = String(agno?.sidecarPort ?? DEFAULT_AGNO_PORT);
 	const host = agno?.sidecarHost ?? "localhost";
-	const agnoPath = resolve(DEFAULT_AGNO_REPO, "libs", "agno");
+	const agnoPath = resolve(defaultAgnoRepo(), "libs", "agno");
 	const pythonPath = existsSync(agnoPath) ? agnoPath : undefined;
 	return {
 		PYTHONPATH: pythonPath
@@ -128,9 +127,13 @@ function sidecarEnv(config: TreeConfig): Record<string, string | undefined> {
 function resolvePython(): string {
 	const fromEnv = process.env.TREE_AGNO_PYTHON;
 	if (fromEnv) return fromEnv;
-	const agnoVenvPython = resolve(DEFAULT_AGNO_REPO, ".venv", "bin", "python");
+	const agnoVenvPython = resolve(defaultAgnoRepo(), ".venv", "bin", "python");
 	if (existsSync(agnoVenvPython)) return agnoVenvPython;
 	return "python3";
+}
+
+function defaultAgnoRepo(): string {
+	return process.env.TREE_AGNO_REPO ?? FALLBACK_AGNO_REPO;
 }
 
 function appendPath(current: string | undefined, next: string): string {

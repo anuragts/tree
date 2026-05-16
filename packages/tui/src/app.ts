@@ -2,8 +2,11 @@ import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
 	CombinedAutocompleteProvider,
+	type Component,
 	Container,
+	CURSOR_MARKER,
 	Editor,
+	type Focusable,
 	Loader,
 	Markdown,
 	matchesKey,
@@ -14,18 +17,22 @@ import {
 	Spacer,
 	Text,
 	TUI,
+	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import type {
-	AdapterContext,
-	AdapterSession,
-	AgentAdapter,
-	ContinueRunInput,
-	LoadedSession,
-	RuntimeHost,
-	SessionEntry,
-	SessionStore,
-	TreeConfig,
-	TreeEvent,
+import {
+	type AdapterContext,
+	type AdapterSession,
+	type AgentAdapter,
+	type ContinueRunInput,
+	type ImageAttachment,
+	type LoadedSession,
+	type RuntimeHost,
+	type SessionEntry,
+	type SessionStore,
+	saveClipboardImageAttachment,
+	type TreeConfig,
+	type TreeEvent,
+	writeWorkspaceEnvValue,
 } from "@tree/core";
 import { WelcomeBanner } from "./banner.js";
 import { Footer } from "./footer.js";
@@ -84,6 +91,19 @@ const SLASH_COMMANDS: SlashCommand[] = [
 		name: "fast",
 		description: "Toggle fast mode for the active adapter",
 	},
+	{
+		name: "set",
+		description: "Set provider API keys in workspace .env",
+		argumentHint: "[openai|anthropic]",
+	},
+	{
+		name: "image",
+		description: "Attach image from clipboard",
+	},
+	{
+		name: "paste-image",
+		description: "Attach image from clipboard",
+	},
 	{ name: "agents", description: "List agents for the active adapter" },
 	{ name: "permissions", description: "Show adapter permissions" },
 	{ name: "cancel", description: "Cancel the active run" },
@@ -98,6 +118,28 @@ const SLASH_COMMANDS: SlashCommand[] = [
 		argumentHint: "<id>",
 	},
 	{ name: "help", description: "Show this command list" },
+];
+
+interface EnvSetting {
+	id: string;
+	label: string;
+	envName: string;
+	description: string;
+}
+
+const ENV_SETTINGS: EnvSetting[] = [
+	{
+		id: "openai",
+		label: "OpenAI",
+		envName: "OPENAI_API_KEY",
+		description: "Used by OpenAI-backed Agno agents and tools",
+	},
+	{
+		id: "anthropic",
+		label: "Anthropic",
+		envName: "ANTHROPIC_API_KEY",
+		description: "Used by Anthropic-backed Agno agents and tools",
+	},
 ];
 
 export class TreeTuiApp {
@@ -120,6 +162,7 @@ export class TreeTuiApp {
 	private toolMessages = new Map<string, { text: Text; title: string }>();
 	private awaitingApproval?: string;
 	private approvalLabels = new Map<string, string>();
+	private pendingImages: ImageAttachment[] = [];
 	private readonly done: Promise<void>;
 	private resolveDone!: () => void;
 	private stopped = false;
@@ -166,6 +209,14 @@ export class TreeTuiApp {
 		this.ui.addInputListener((data) => {
 			if (matchesKey(data, "ctrl+c")) {
 				void this.stop();
+				return { consume: true };
+			}
+			if (
+				!this.ui.hasOverlay() &&
+				(matchesKey(data, "ctrl+v") || matchesKey(data, "alt+v"))
+			) {
+				void this.attachClipboardImage();
+				return { consume: true };
 			}
 			return undefined;
 		});
@@ -206,14 +257,16 @@ export class TreeTuiApp {
 	private async send(content: string): Promise<void> {
 		await this.ensureSession();
 		const adapter = this.requireAdapter();
+		const images = this.pendingImages.splice(0);
+		const userContent = renderUserContent(content, images);
 		this.setWorking(true);
 		this.currentRunId = undefined;
-		await this.appendMessage("user", content);
+		await this.appendMessage("user", userContent);
 		this.adapterSession ??= await adapter.startSession(this.context());
 		try {
 			for await (const event of adapter.sendMessage(
 				this.adapterSession,
-				{ content },
+				{ content: userContent, images },
 				this.context(),
 			)) {
 				await this.handleEvent(event);
@@ -394,6 +447,13 @@ export class TreeTuiApp {
 			case "/fast":
 				await this.toggleFast();
 				return;
+			case "/set":
+				await this.setProviderEnv(args[0]);
+				return;
+			case "/image":
+			case "/paste-image":
+				await this.attachClipboardImage();
+				return;
 			case "/permissions":
 				await this.appendSystem(
 					JSON.stringify(
@@ -410,6 +470,7 @@ export class TreeTuiApp {
 					name: args.join(" ") || "tree session",
 				});
 				this.adapterSession = undefined;
+				this.pendingImages = [];
 				this.messages.clear();
 				await this.appendSystem(`new session ${this.session.header.id}`);
 				return;
@@ -457,6 +518,8 @@ export class TreeTuiApp {
 			cmd("/adapter [id]", "open adapter picker or switch by id"),
 			cmd("/model [name]", "open model picker or switch by name"),
 			cmd("/fast", "toggle fast mode for the active adapter"),
+			cmd("/set [provider]", "save provider API key to workspace .env"),
+			cmd("/image", "attach image from clipboard"),
 			cmd("/agents", "list agents for the active adapter"),
 			cmd("/permissions", "show adapter permissions"),
 			cmd("/cancel", "cancel the active run"),
@@ -477,6 +540,20 @@ export class TreeTuiApp {
 		this.messages.addChild(new WelcomeBanner(() => this.activeAdapter));
 		this.messages.addChild(new Spacer(1));
 		this.ui.requestRender();
+	}
+
+	private async attachClipboardImage(): Promise<void> {
+		const image = await saveClipboardImageAttachment({
+			outputDir: resolve(this.options.config.cwd, ".tree", "attachments"),
+		});
+		if (!image) {
+			await this.appendSystem("No image found in clipboard.");
+			return;
+		}
+		this.pendingImages.push(image);
+		await this.appendSystem(
+			`attached image ${this.pendingImages.length}: ${image.path}`,
+		);
 	}
 
 	private async showAgents(): Promise<void> {
@@ -601,6 +678,80 @@ export class TreeTuiApp {
 		await this.appendSystem(
 			`fast mode ${cfg.fastMode ? chalk.hex(palette.leaf)("on") : chalk.hex(palette.muted)("off")} for ${model}`,
 		);
+	}
+
+	private async setProviderEnv(provider?: string): Promise<void> {
+		if (provider) {
+			const setting = findEnvSetting(provider);
+			if (!setting) {
+				await this.appendSystem(
+					`No env setting named ${provider}. Use /set openai or /set anthropic.`,
+				);
+				return;
+			}
+			this.openEnvSecretPrompt(setting);
+			return;
+		}
+		const items: SelectItem[] = ENV_SETTINGS.map((setting) => ({
+			value: setting.id,
+			label: setting.label,
+			description: setting.envName,
+		}));
+		this.openPicker(items, undefined, (id) => {
+			const setting = findEnvSetting(id);
+			if (setting) this.openEnvSecretPrompt(setting);
+		});
+	}
+
+	private openEnvSecretPrompt(setting: EnvSetting): void {
+		let close = () => {};
+		const prompt = new SecretInputDialog(
+			`Set ${setting.label} key`,
+			setting.envName,
+			setting.description,
+			async (value) => {
+				close();
+				const key = value.trim();
+				if (!key) {
+					await this.appendSystem(`${setting.envName} was not changed.`);
+					return;
+				}
+				try {
+					const result = await writeWorkspaceEnvValue(
+						this.options.config.cwd,
+						setting.envName,
+						key,
+					);
+					process.env[setting.envName] = key;
+					this.adapterSession = undefined;
+					const gitignoreText = result.updatedGitignore
+						? `updated ${result.gitignorePath}`
+						: `${result.gitignorePath} already ignores .env`;
+					await this.appendSystem(
+						`saved ${setting.envName} to ${result.envPath}\n${gitignoreText}\nRestart any already-running AgentOS process to pick up the new key.`,
+					);
+				} catch (error) {
+					await this.appendSystem(
+						`Could not save ${setting.envName}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			},
+			async () => {
+				close();
+				await this.appendSystem(`${setting.envName} was not changed.`);
+			},
+		);
+		const handle = this.ui.showOverlay(prompt, {
+			anchor: "center",
+			width: "70%",
+			minWidth: 48,
+			maxHeight: 8,
+		});
+		close = () => {
+			handle.hide();
+			this.ui.setFocus(this.editor);
+		};
+		handle.focus();
 	}
 
 	private openPicker(
@@ -900,6 +1051,98 @@ export class TreeTuiApp {
 		}
 		this.resolveDone();
 	}
+}
+
+class SecretInputDialog implements Component, Focusable {
+	focused = false;
+	private value = "";
+
+	constructor(
+		private readonly title: string,
+		private readonly envName: string,
+		private readonly description: string,
+		private readonly onSubmit: (value: string) => void | Promise<void>,
+		private readonly onCancel: () => void | Promise<void>,
+	) {}
+
+	handleInput(data: string): void {
+		if (data === "\x1b" || matchesKey(data, "ctrl+c")) {
+			void this.onCancel();
+			return;
+		}
+		if (data === "\r" || data === "\n") {
+			void this.onSubmit(this.value);
+			return;
+		}
+		if (data === "\x7f" || data === "\b") {
+			this.value = Array.from(this.value).slice(0, -1).join("");
+			return;
+		}
+		if (data === "\x15") {
+			this.value = "";
+			return;
+		}
+		const normalized = data
+			.split("\x1b[200~")
+			.join("")
+			.split("\x1b[201~")
+			.join("");
+		for (const ch of Array.from(normalized)) {
+			if (ch === "\r" || ch === "\n") {
+				void this.onSubmit(this.value);
+				return;
+			}
+			if (!isControlInputChar(ch)) this.value += ch;
+		}
+	}
+
+	invalidate(): void {}
+
+	render(width: number): string[] {
+		const maxWidth = Math.max(1, width);
+		const maskWidth = Math.max(8, maxWidth - 6);
+		const hasOverflow = this.value.length > maskWidth;
+		const valueMaskWidth = hasOverflow ? Math.max(1, maskWidth - 3) : maskWidth;
+		const mask =
+			this.value.length > 0
+				? "*".repeat(Math.min(this.value.length, valueMaskWidth))
+				: chalk.hex(palette.subtle)("paste key");
+		const overflow = hasOverflow ? "..." : "";
+		const cursor = this.focused ? `${CURSOR_MARKER}${chalk.inverse(" ")}` : "";
+		const lines = [
+			chalk.bold.hex(palette.leaf)(this.title),
+			chalk.hex(palette.cyan)(this.envName),
+			chalk.hex(palette.muted)(this.description),
+			"",
+			`${chalk.hex(palette.subtle)(">")} ${overflow}${mask}${cursor}`,
+			chalk.hex(palette.subtle)("Enter to save / Esc to cancel"),
+		];
+		return lines.map((line) => truncateToWidth(line, maxWidth));
+	}
+}
+
+function findEnvSetting(input: string): EnvSetting | undefined {
+	const normalized = input.toLowerCase();
+	return ENV_SETTINGS.find(
+		(setting) =>
+			setting.id === normalized ||
+			setting.label.toLowerCase() === normalized ||
+			setting.envName.toLowerCase() === normalized,
+	);
+}
+
+function isControlInputChar(input: string): boolean {
+	const code = input.charCodeAt(0);
+	return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
+}
+
+function renderUserContent(content: string, images: ImageAttachment[]): string {
+	if (images.length === 0) return content;
+	const attachmentLines = images.map(
+		(image, index) =>
+			`[attached image ${index + 1}: ${image.path}${image.mimeType ? ` (${image.mimeType})` : ""}]`,
+	);
+	return `${content}\n\n${attachmentLines.join("\n")}`;
 }
 
 function parseApprovalAnswer(input: string): boolean | undefined {

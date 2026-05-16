@@ -26,7 +26,18 @@ cp tree.config.example.toml tree.config.toml
 
 Edit `tree.config.toml` if you want to change the default adapter, workspace directory, session location, or adapter-specific settings.
 
-If you use the bundled Agno sidecar from a custom checkout, copy `.env.example` to `.env` and set:
+Tree loads environment variables from `.env` in the directory where it is started. Existing shell variables take precedence, so you can also export keys before launching Tree:
+
+```sh
+export OPENAI_API_KEY=...
+export ANTHROPIC_API_KEY=...
+```
+
+Inside the TUI, run `/set`, choose OpenAI or Anthropic, and paste the key. Tree writes the key to the workspace `.env` file and ensures `.gitignore` excludes local env files.
+
+To attach a screenshot or copied image to your next message, press `Ctrl+V` in the TUI or run `/image`. Tree saves the clipboard image under `.tree/attachments` and sends it as an image file to Agno AgentOS.
+
+If you use the bundled Agno sidecar from a custom checkout, set these in `.env` or your shell:
 
 - `TREE_AGNO_REPO` to the local Agno repository path.
 - `TREE_AGNO_PYTHON` to the Python interpreter for that environment.

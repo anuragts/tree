@@ -64,8 +64,14 @@ export interface AdapterSession {
 
 export interface SendMessageInput {
 	content: string;
-	images?: Array<{ path: string; mimeType?: string }>;
+	images?: ImageAttachment[];
 	files?: Array<{ path: string; mimeType?: string }>;
+}
+
+export interface ImageAttachment {
+	path: string;
+	mimeType?: string;
+	sizeBytes?: number;
 }
 
 export type TreeEvent =

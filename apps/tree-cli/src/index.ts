@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { createDefaultAdapters } from "@tree/adapters";
 import {
 	type AgentAdapter,
+	applyWorkspaceEnv,
 	createRuntimeHost,
 	loadTreeConfig,
 	type RuntimeHost,
@@ -42,6 +43,7 @@ async function main(argv: string[]): Promise<void> {
 	}
 
 	const config = loadTreeConfig({ configPath: args.configPath });
+	const envLoad = applyWorkspaceEnv(config.cwd);
 	if (args.adapter) config.defaultAdapter = args.adapter;
 	if (args.yolo) applyYoloConfig(config);
 	const runtime = createRuntimeHost(config.runtime);
@@ -92,6 +94,12 @@ async function main(argv: string[]): Promise<void> {
 		}
 
 		const startupNotices: string[] = [];
+		if (envLoad.loaded.length > 0) {
+			startupNotices.push(
+				`loaded ${envLoad.loaded.length} env var(s) from ${envLoad.path}`,
+			);
+		}
+		if (sidecar?.notice) startupNotices.push(sidecar.notice);
 		if (args.yolo) {
 			startupNotices.push(
 				"YOLO mode · approvals auto-accepted, sandbox disabled. Tools run unrestricted.",
@@ -190,7 +198,7 @@ Usage:
                                          others: auto-approve all approvals)
 
 Interactive commands:
-  /new /resume [id] /adapter [id] /model [name] /fast /agents /permissions /cancel
+  /new /resume [id] /adapter [id] /model [name] /fast /set /image /agents /permissions /cancel
   /sessions /tree /fork [entryId] /export [file] /approve <id> /reject <id> /help
 `);
 }

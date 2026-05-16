@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import {
 	type AdapterContext,
 	type AdapterSession,
@@ -60,6 +62,16 @@ export class AgnoAdapter implements AgentAdapter {
 		form.set("message", input.content);
 		form.set("stream", "true");
 		form.set("session_id", session.id);
+		for (const image of input.images ?? []) {
+			const bytes = await readFile(image.path);
+			form.append(
+				"files",
+				new Blob([bytes], {
+					type: image.mimeType ?? "application/octet-stream",
+				}),
+				basename(image.path),
+			);
+		}
 		const userId = context.config.adapters.agno?.userId;
 		if (userId) form.set("user_id", userId);
 		yield* this.postRun(
