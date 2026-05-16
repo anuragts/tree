@@ -213,6 +213,9 @@ export class CodexAdapter implements AgentAdapter {
 				model: context.config.adapters.codex?.model,
 				cwd: session.cwd,
 				sandboxPolicy: sandboxPolicy(context.config.adapters.codex?.sandbox),
+				reasoningEffort: context.config.adapters.codex?.fastMode
+					? "minimal"
+					: undefined,
 			});
 			state.turnId =
 				stringAt(start.result, ["turn", "id"]) ??
@@ -354,6 +357,7 @@ export class CodexAdapter implements AgentAdapter {
 		const config = context.config.adapters.codex;
 		if (config?.model) args.push("--model", config.model);
 		if (config?.sandbox) args.push("--sandbox", config.sandbox);
+		if (config?.fastMode) args.push("-c", 'model_reasoning_effort="minimal"');
 		args.push(prompt);
 		return args;
 	}

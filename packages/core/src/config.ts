@@ -18,7 +18,7 @@ function bunAvailable(): boolean {
 export function defaultTreeConfig(cwd = process.cwd()): TreeConfig {
 	return {
 		runtime: bunAvailable() ? "bun" : "node",
-		defaultAdapter: "agno",
+		defaultAdapter: "codex",
 		cwd,
 		sessionDir: resolve(cwd, ".tree", "sessions"),
 		adapters: {

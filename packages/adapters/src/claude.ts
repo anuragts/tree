@@ -136,6 +136,7 @@ export class ClaudeAdapter implements AgentAdapter {
 			args.push("--disallowedTools", config.disallowedTools.join(","));
 		if (config?.permissionMode)
 			args.push("--permission-mode", config.permissionMode);
+		if (config?.fastMode) args.push("--effort", "low");
 		return args;
 	}
 }

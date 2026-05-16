@@ -33,6 +33,7 @@ export interface ClaudeAdapterConfig {
 	disallowedTools?: string[];
 	permissionMode?: string;
 	cwd?: string;
+	fastMode?: boolean;
 }
 
 export interface CodexAdapterConfig {
@@ -40,6 +41,7 @@ export interface CodexAdapterConfig {
 	model?: string;
 	sandbox?: string;
 	cwd?: string;
+	fastMode?: boolean;
 }
 
 export interface AgentSummary {

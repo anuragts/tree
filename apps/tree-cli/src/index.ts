@@ -178,8 +178,8 @@ function printHelp(): void {
 	console.log(`tree-agent ${VERSION}
 
 Usage:
-  bun run dev                         Start the interactive TUI
-  bun run dev -- --adapter agno       Start with an adapter
+  bun run dev                         Start the interactive TUI (codex by default)
+  bun run dev -- --adapter claude     Override the default adapter
   bun run dev -- --print "prompt"     Run once and print output
   bun run dev -- --list-agents        List agents for the active adapter
   bun run dev -- --sessions           List local sessions
@@ -190,7 +190,7 @@ Usage:
                                          others: auto-approve all approvals)
 
 Interactive commands:
-  /new /resume [id] /adapter [id] /agents /permissions /cancel
+  /new /resume [id] /adapter [id] /model [name] /fast /agents /permissions /cancel
   /sessions /tree /fork [entryId] /export [file] /approve <id> /reject <id> /help
 `);
 }

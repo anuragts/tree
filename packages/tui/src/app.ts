@@ -8,6 +8,8 @@ import {
 	Markdown,
 	matchesKey,
 	ProcessTerminal,
+	type SelectItem,
+	SelectList,
 	type SlashCommand,
 	Spacer,
 	Text,
@@ -27,7 +29,15 @@ import type {
 } from "@tree/core";
 import { WelcomeBanner } from "./banner.js";
 import { Footer } from "./footer.js";
-import { chalk, editorTheme, markdownTheme, palette, role } from "./theme.js";
+import { FAST_MODE_MODELS, MODEL_CATALOG } from "./model-catalog.js";
+import {
+	chalk,
+	editorTheme,
+	markdownTheme,
+	palette,
+	role,
+	selectListTheme,
+} from "./theme.js";
 import { renderSessionTree } from "./tree-text.js";
 
 export interface TreeTuiOptions {
@@ -62,8 +72,17 @@ const SLASH_COMMANDS: SlashCommand[] = [
 	},
 	{
 		name: "adapter",
-		description: "List or switch the active adapter",
+		description: "Open adapter picker or switch by id",
 		argumentHint: "[id]",
+	},
+	{
+		name: "model",
+		description: "Open model picker or switch by name",
+		argumentHint: "[name]",
+	},
+	{
+		name: "fast",
+		description: "Toggle fast mode for the active adapter",
 	},
 	{ name: "agents", description: "List agents for the active adapter" },
 	{ name: "permissions", description: "Show adapter permissions" },
@@ -367,6 +386,12 @@ export class TreeTuiApp {
 			case "/adapter":
 				await this.switchAdapter(args[0]);
 				return;
+			case "/model":
+				await this.switchModel(args.join(" ") || undefined);
+				return;
+			case "/fast":
+				await this.toggleFast();
+				return;
 			case "/permissions":
 				await this.appendSystem(
 					JSON.stringify(
@@ -427,7 +452,9 @@ export class TreeTuiApp {
 			cmd("/tree", "show the session tree"),
 			cmd("/fork [entryId]", "fork from an entry (defaults to leaf)"),
 			cmd("/export [file]", "export session to markdown"),
-			cmd("/adapter [id]", "list or switch adapter"),
+			cmd("/adapter [id]", "open adapter picker or switch by id"),
+			cmd("/model [name]", "open model picker or switch by name"),
+			cmd("/fast", "toggle fast mode for the active adapter"),
 			cmd("/agents", "list agents for the active adapter"),
 			cmd("/permissions", "show adapter permissions"),
 			cmd("/cancel", "cancel the active run"),
@@ -472,21 +499,133 @@ export class TreeTuiApp {
 	}
 
 	private async switchAdapter(next?: string): Promise<void> {
-		if (!next) {
+		if (next) {
+			if (!this.options.adapters.has(next)) {
+				await this.appendSystem(`No adapter named ${next}`);
+				return;
+			}
+			await this.performAdapterSwitch(next);
+			return;
+		}
+		const items: SelectItem[] = Array.from(this.options.adapters.entries()).map(
+			([id, adapter]) => ({
+				value: id,
+				label: adapter.displayName ?? id,
+				description: id === this.activeAdapter ? "current" : undefined,
+			}),
+		);
+		this.openPicker(items, this.activeAdapter, (id) =>
+			this.performAdapterSwitch(id),
+		);
+	}
+
+	private async performAdapterSwitch(id: string): Promise<void> {
+		this.activeAdapter = id;
+		this.adapterSession = undefined;
+		await this.appendSystem(
+			`adapter switched to ${chalk.hex(palette.leaf)(id)}`,
+		);
+	}
+
+	private currentModel(): string | undefined {
+		const cfg = this.options.config.adapters[this.activeAdapter] as
+			| { model?: string }
+			| undefined;
+		return cfg?.model;
+	}
+
+	private async switchModel(next?: string): Promise<void> {
+		if (this.activeAdapter === "agno") {
 			await this.appendSystem(
-				`Adapters: ${Array.from(this.options.adapters.keys()).join(", ")}. Active: ${this.activeAdapter}`,
+				"Agno models are selected per-agent. Use /agents to switch.",
 			);
 			return;
 		}
-		if (!this.options.adapters.has(next)) {
-			await this.appendSystem(`No adapter named ${next}`);
+		if (next) {
+			await this.performModelSwitch(next);
 			return;
 		}
-		this.activeAdapter = next;
+		const items = MODEL_CATALOG[this.activeAdapter] ?? [];
+		if (items.length === 0) {
+			await this.appendSystem(
+				`No curated models for ${this.activeAdapter}. Use /model <name>.`,
+			);
+			return;
+		}
+		this.openPicker(items, this.currentModel(), (m) =>
+			this.performModelSwitch(m),
+		);
+	}
+
+	private async performModelSwitch(model: string): Promise<void> {
+		const adapters = this.options.config.adapters as Record<
+			string,
+			Record<string, unknown> | undefined
+		>;
+		if (!adapters[this.activeAdapter]) adapters[this.activeAdapter] = {};
+		const cfg = adapters[this.activeAdapter] as { model?: string };
+		cfg.model = model;
 		this.adapterSession = undefined;
 		await this.appendSystem(
-			`adapter switched to ${chalk.hex(palette.leaf)(next)}`,
+			`model switched to ${chalk.hex(palette.leaf)(model)}`,
 		);
+	}
+
+	private async toggleFast(): Promise<void> {
+		const supported = FAST_MODE_MODELS[this.activeAdapter];
+		if (!supported) {
+			await this.appendSystem(
+				role.error(`${this.activeAdapter} does not support fast mode`),
+			);
+			return;
+		}
+		const model = this.currentModel();
+		if (!model || !supported.includes(model)) {
+			await this.appendSystem(
+				role.error(
+					`fast mode unsupported on ${model ?? "(no model set)"} — supported: ${supported.join(", ")}`,
+				),
+			);
+			return;
+		}
+		const adapters = this.options.config.adapters as Record<
+			string,
+			Record<string, unknown> | undefined
+		>;
+		if (!adapters[this.activeAdapter]) adapters[this.activeAdapter] = {};
+		const cfg = adapters[this.activeAdapter] as { fastMode?: boolean };
+		cfg.fastMode = !cfg.fastMode;
+		this.adapterSession = undefined;
+		await this.appendSystem(
+			`fast mode ${cfg.fastMode ? chalk.hex(palette.leaf)("on") : chalk.hex(palette.muted)("off")} for ${model}`,
+		);
+	}
+
+	private openPicker(
+		items: SelectItem[],
+		initialValue: string | undefined,
+		onPick: (value: string) => void | Promise<void>,
+	): void {
+		const list = new SelectList(items, 10, selectListTheme);
+		const idx = initialValue
+			? items.findIndex((i) => i.value === initialValue)
+			: -1;
+		if (idx >= 0) list.setSelectedIndex(idx);
+		const handle = this.ui.showOverlay(list, {
+			anchor: "center",
+			width: "60%",
+			maxHeight: "60%",
+		});
+		handle.focus();
+		list.onSelect = (item) => {
+			handle.hide();
+			this.ui.setFocus(this.editor);
+			void onPick(item.value);
+		};
+		list.onCancel = () => {
+			handle.hide();
+			this.ui.setFocus(this.editor);
+		};
 	}
 
 	private async resume(idPrefix?: string): Promise<void> {
@@ -633,9 +772,7 @@ export class TreeTuiApp {
 		}
 		this.messages.addChild(
 			new Text(
-				(approved
-					? role.toolDone("approved")
-					: role.error("rejected")) +
+				(approved ? role.toolDone("approved") : role.error("rejected")) +
 					(label ? chalk.dim(` · ${label}`) : ""),
 				0,
 				0,
@@ -809,20 +946,28 @@ function summarizeTool(name: string, args: unknown): ToolSummary {
 	switch (canonical) {
 		case "commandExecution": {
 			const command = coerceCommand(obj.command);
-			return { title: command ? `ran ${shortCommand(command)}` : pretty, detail: command };
+			return {
+				title: command ? `ran ${shortCommand(command)}` : pretty,
+				detail: command,
+			};
 		}
 		case "fileChange": {
 			const path =
 				strProp(obj, "path") ??
 				strProp(obj, "file") ??
 				summarizeFileList(obj.changes ?? obj.files);
-			return { title: path ? `edit ${path}` : pretty, detail: strProp(obj, "reason") };
+			return {
+				title: path ? `edit ${path}` : pretty,
+				detail: strProp(obj, "reason"),
+			};
 		}
 		case "dynamicToolCall":
 		case "mcpToolCall": {
 			const toolName = strProp(obj, "name") ?? pretty;
 			const argsPreview =
-				strProp(obj, "arguments") ?? strProp(obj, "args") ?? jsonPreview(obj.arguments);
+				strProp(obj, "arguments") ??
+				strProp(obj, "args") ??
+				jsonPreview(obj.arguments);
 			return { title: toolName, detail: argsPreview };
 		}
 		case "webSearch": {
@@ -856,7 +1001,11 @@ function shortCommand(cmd: string): string {
 function summarizeFileList(value: unknown): string | undefined {
 	if (!Array.isArray(value)) return undefined;
 	const names = value
-		.map((item) => (isRecord(item) ? strProp(item, "path") ?? strProp(item, "file") : undefined))
+		.map((item) =>
+			isRecord(item)
+				? (strProp(item, "path") ?? strProp(item, "file"))
+				: undefined,
+		)
 		.filter((v): v is string => Boolean(v));
 	if (names.length === 0) return undefined;
 	if (names.length === 1) return names[0];
@@ -884,7 +1033,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function strProp(obj: Record<string, unknown>, key: string): string | undefined {
+function strProp(
+	obj: Record<string, unknown>,
+	key: string,
+): string | undefined {
 	const value = obj[key];
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
