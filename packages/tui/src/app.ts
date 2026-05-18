@@ -55,6 +55,11 @@ export interface TreeTuiOptions {
 	initialPrompt?: string;
 	startupNotices?: string[];
 	yolo?: boolean;
+	onAdapterActivated?: (adapterId: string) => Promise<string | undefined>;
+	onWorkspaceEnvChanged?: (input: {
+		envName: string;
+		activeAdapter: string;
+	}) => Promise<string | undefined>;
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -160,6 +165,7 @@ export class TreeTuiApp {
 	private activeAssistantText = "";
 	private pendingApprovals = new Map<string, ContinueRunInput>();
 	private toolMessages = new Map<string, { text: Text; title: string }>();
+	private editorMutating = false;
 	private awaitingApproval?: string;
 	private approvalLabels = new Map<string, string>();
 	private pendingImages: ImageAttachment[] = [];
@@ -190,6 +196,29 @@ export class TreeTuiApp {
 		this.editor.setAutocompleteProvider(
 			new CombinedAutocompleteProvider(SLASH_COMMANDS, options.config.cwd),
 		);
+		this.editor.onChange = (text) => this.handleEditorChange(text);
+	}
+
+	private handleEditorChange(text: string): void {
+		if (this.editorMutating) return;
+		const regex = /(\/[^\s]+\.(?:png|jpe?g|gif|webp|bmp|tiff))(?=\s|$)/gi;
+		const matches = Array.from(text.matchAll(regex));
+		if (matches.length === 0) return;
+		let newText = text;
+		let mutated = false;
+		for (const match of matches) {
+			const path = match[1];
+			const idx = this.pendingImages.length + 1;
+			this.pendingImages.push({ path, mimeType: imageMimeType(path) });
+			newText = newText.replace(path, `[Image #${idx}]`);
+			mutated = true;
+		}
+		if (mutated) {
+			this.editorMutating = true;
+			this.editor.setText(newText);
+			this.editorMutating = false;
+			this.ui.requestRender();
+		}
 	}
 
 	async run(): Promise<void> {
@@ -287,21 +316,33 @@ export class TreeTuiApp {
 
 	private setWorking(working: boolean): void {
 		this.working = working;
+		if (working) {
+			this.startStatusLoading("thinking...");
+		} else {
+			this.stopStatusLoading();
+		}
+		this.ui.requestRender();
+	}
+
+	private startStatusLoading(label: string): void {
+		this.status.clear();
+		this.statusLoader?.stop();
+		this.footer.startSpinner();
+		this.statusLoader = new Loader(
+			this.ui,
+			(s) => chalk.hex(palette.yellow)(s),
+			(s) => chalk.hex(palette.muted)(s),
+			label,
+		);
+		this.status.addChild(this.statusLoader);
+		this.ui.requestRender();
+	}
+
+	private stopStatusLoading(): void {
 		this.status.clear();
 		this.statusLoader?.stop();
 		this.statusLoader = undefined;
-		if (working) {
-			this.footer.startSpinner();
-			this.statusLoader = new Loader(
-				this.ui,
-				(s) => chalk.hex(palette.yellow)(s),
-				(s) => chalk.hex(palette.muted)(s),
-				"thinking...",
-			);
-			this.status.addChild(this.statusLoader);
-		} else {
-			this.footer.stopSpinner();
-		}
+		this.footer.stopSpinner();
 		this.ui.requestRender();
 	}
 
@@ -404,6 +445,26 @@ export class TreeTuiApp {
 					new Text(chalk.hex(palette.subtle)("─── run completed ───"), 0, 0),
 				);
 				break;
+			case "usage": {
+				const total = event.usage.totalTokens;
+				const input = event.usage.inputTokens;
+				const output = event.usage.outputTokens;
+				const parts = [
+					total !== undefined ? `${total} tokens` : undefined,
+					input !== undefined ? `${input} in` : undefined,
+					output !== undefined ? `${output} out` : undefined,
+				].filter((part): part is string => Boolean(part));
+				if (parts.length > 0) {
+					this.messages.addChild(
+						new Text(
+							chalk.hex(palette.subtle)(`usage · ${parts.join(" · ")}`),
+							0,
+							0,
+						),
+					);
+				}
+				break;
+			}
 			case "log":
 				this.messages.addChild(
 					new Text(chalk.dim(`[${event.level}] ${event.message}`), 0, 0),
@@ -551,9 +612,11 @@ export class TreeTuiApp {
 			return;
 		}
 		this.pendingImages.push(image);
-		await this.appendSystem(
-			`attached image ${this.pendingImages.length}: ${image.path}`,
-		);
+		const idx = this.pendingImages.length;
+		this.editorMutating = true;
+		this.editor.insertTextAtCursor(`[Image #${idx}]`);
+		this.editorMutating = false;
+		this.ui.requestRender();
 	}
 
 	private async showAgents(): Promise<void> {
@@ -604,6 +667,18 @@ export class TreeTuiApp {
 		await this.appendSystem(
 			`adapter switched to ${chalk.hex(palette.leaf)(id)}`,
 		);
+		if (!this.options.onAdapterActivated) return;
+		if (id === "agno") this.startStatusLoading("starting Agno AgentOS...");
+		try {
+			const notice = await this.options.onAdapterActivated(id);
+			if (notice) await this.appendSystem(notice);
+		} catch (error) {
+			await this.appendSystem(
+				`Could not activate ${id}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		} finally {
+			if (id === "agno") this.stopStatusLoading();
+		}
 	}
 
 	private currentModel(): string | undefined {
@@ -727,9 +802,26 @@ export class TreeTuiApp {
 					const gitignoreText = result.updatedGitignore
 						? `updated ${result.gitignorePath}`
 						: `${result.gitignorePath} already ignores .env`;
-					await this.appendSystem(
-						`saved ${setting.envName} to ${result.envPath}\n${gitignoreText}\nRestart any already-running AgentOS process to pick up the new key.`,
-					);
+					const lines = [
+						`saved ${setting.envName} to ${result.envPath}`,
+						gitignoreText,
+					];
+					if (
+						this.options.onWorkspaceEnvChanged &&
+						this.activeAdapter === "agno"
+					) {
+						this.startStatusLoading("restarting Agno AgentOS...");
+						try {
+							const notice = await this.options.onWorkspaceEnvChanged({
+								envName: setting.envName,
+								activeAdapter: this.activeAdapter,
+							});
+							if (notice) lines.push(notice);
+						} finally {
+							this.stopStatusLoading();
+						}
+					}
+					await this.appendSystem(lines.join("\n"));
 				} catch (error) {
 					await this.appendSystem(
 						`Could not save ${setting.envName}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1138,11 +1230,33 @@ function isControlInputChar(input: string): boolean {
 
 function renderUserContent(content: string, images: ImageAttachment[]): string {
 	if (images.length === 0) return content;
+	if (/\[Image #\d+\]/.test(content)) return content;
 	const attachmentLines = images.map(
 		(image, index) =>
-			`[attached image ${index + 1}: ${image.path}${image.mimeType ? ` (${image.mimeType})` : ""}]`,
+			`[Image #${index + 1}] ${image.path}${image.mimeType ? ` (${image.mimeType})` : ""}`,
 	);
 	return `${content}\n\n${attachmentLines.join("\n")}`;
+}
+
+function imageMimeType(path: string): string | undefined {
+	const ext = path.toLowerCase().split(".").pop();
+	switch (ext) {
+		case "png":
+			return "image/png";
+		case "jpg":
+		case "jpeg":
+			return "image/jpeg";
+		case "gif":
+			return "image/gif";
+		case "webp":
+			return "image/webp";
+		case "bmp":
+			return "image/bmp";
+		case "tiff":
+			return "image/tiff";
+		default:
+			return undefined;
+	}
 }
 
 function parseApprovalAnswer(input: string): boolean | undefined {

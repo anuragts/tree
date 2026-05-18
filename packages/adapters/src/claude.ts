@@ -60,7 +60,7 @@ export class ClaudeAdapter implements AgentAdapter {
 			};
 			return;
 		}
-		const args = this.cliArgs(context, input.content);
+		const args = this.cliArgs(context, input.content, input.images ?? []);
 		const child = context.runtime.spawn(claudePath, args, { cwd: session.cwd });
 		for await (const chunk of child.stdout)
 			yield { type: "assistant_delta", text: chunk, runId };
@@ -126,8 +126,18 @@ export class ClaudeAdapter implements AgentAdapter {
 		return events;
 	}
 
-	private cliArgs(context: AdapterContext, prompt: string): string[] {
-		const args = ["-p", prompt];
+	private cliArgs(
+		context: AdapterContext,
+		prompt: string,
+		images: ReadonlyArray<{ path: string }> = [],
+	): string[] {
+		const decoratedPrompt =
+			images.length > 0
+				? `${prompt}\n\nAttached images:\n${images
+						.map((img, i) => `[Image #${i + 1}] ${img.path}`)
+						.join("\n")}`
+				: prompt;
+		const args = ["-p", decoratedPrompt];
 		const config = context.config.adapters.claude;
 		if (config?.model) args.push("--model", config.model);
 		if (config?.allowedTools?.length)

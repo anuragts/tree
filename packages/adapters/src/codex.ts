@@ -83,6 +83,7 @@ export class CodexAdapter implements AgentAdapter {
 			yield* this.sendViaAppServer(codexPath, session, input, context, runId);
 			return;
 		}
+		const execImages = input.images ?? [];
 		if (mode === "mcp") {
 			yield {
 				type: "log",
@@ -92,7 +93,7 @@ export class CodexAdapter implements AgentAdapter {
 				details: { runId },
 			};
 		}
-		const args = this.execArgs(context, input.content);
+		const args = this.execArgs(context, input.content, execImages);
 		const child = context.runtime.spawn(codexPath, args, { cwd: session.cwd });
 		for await (const chunk of child.stdout)
 			yield { type: "assistant_delta", text: chunk, runId };
@@ -207,9 +208,15 @@ export class CodexAdapter implements AgentAdapter {
 				};
 				return;
 			}
+			const turnInput: Array<Record<string, unknown>> = [
+				{ type: "text", text: input.content },
+			];
+			for (const image of input.images ?? []) {
+				turnInput.push({ type: "localImage", path: image.path });
+			}
 			const start = await request(state, "turn/start", {
 				threadId: state.threadId,
-				input: [{ type: "text", text: input.content }],
+				input: turnInput,
 				model: context.config.adapters.codex?.model,
 				cwd: session.cwd,
 				sandboxPolicy: sandboxPolicy(context.config.adapters.codex?.sandbox),
@@ -352,12 +359,19 @@ export class CodexAdapter implements AgentAdapter {
 		};
 	}
 
-	private execArgs(context: AdapterContext, prompt: string): string[] {
+	private execArgs(
+		context: AdapterContext,
+		prompt: string,
+		images: ReadonlyArray<{ path: string }> = [],
+	): string[] {
 		const args = ["exec"];
 		const config = context.config.adapters.codex;
 		if (config?.model) args.push("--model", config.model);
 		if (config?.sandbox) args.push("--sandbox", config.sandbox);
 		if (config?.fastMode) args.push("-c", 'model_reasoning_effort="minimal"');
+		for (const image of images) {
+			args.push("--image", image.path);
+		}
 		args.push(prompt);
 		return args;
 	}

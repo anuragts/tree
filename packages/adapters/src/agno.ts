@@ -61,6 +61,7 @@ export class AgnoAdapter implements AgentAdapter {
 		const form = new FormData();
 		form.set("message", input.content);
 		form.set("stream", "true");
+		form.set("stream_events", "true");
 		form.set("session_id", session.id);
 		for (const image of input.images ?? []) {
 			const bytes = await readFile(image.path);
@@ -120,6 +121,7 @@ export class AgnoAdapter implements AgentAdapter {
 		}
 		const form = new FormData();
 		form.set("stream", "true");
+		form.set("stream_events", "true");
 		form.set("session_id", input.sessionId ?? session.id);
 		form.set(
 			"tools",

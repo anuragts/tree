@@ -36,4 +36,77 @@ describe("normalizeAgnoSse", () => {
 			),
 		).toBe(true);
 	});
+
+	test("maps Agno singular tool events", () => {
+		const started = normalizeAgnoSse({
+			event: "ToolCallStarted",
+			data: "{}",
+			json: {
+				run_id: "r1",
+				tool: {
+					tool_call_id: "tc1",
+					tool_name: "read_file",
+					tool_args: { path: "README.md" },
+				},
+			},
+		});
+		expect(started).toEqual([
+			{
+				type: "tool_started",
+				toolCallId: "tc1",
+				name: "read_file",
+				args: { path: "README.md" },
+				runId: "r1",
+			},
+		]);
+
+		const completed = normalizeAgnoSse({
+			event: "ToolCallCompleted",
+			data: "{}",
+			json: {
+				run_id: "r1",
+				tool: {
+					tool_call_id: "tc1",
+					tool_name: "read_file",
+					result: "ok",
+				},
+			},
+		});
+		expect(completed).toEqual([
+			{
+				type: "tool_completed",
+				toolCallId: "tc1",
+				name: "read_file",
+				result: "ok",
+				isError: false,
+				runId: "r1",
+			},
+		]);
+	});
+
+	test("maps Agno lifecycle events to visible logs", () => {
+		const events = normalizeAgnoSse({
+			event: "ModelRequestStarted",
+			data: "{}",
+			json: {
+				event: "ModelRequestStarted",
+				run_id: "r1",
+				model: "gpt-4.1",
+				model_provider: "OpenAI",
+			},
+		});
+		expect(events).toEqual([
+			{
+				type: "log",
+				level: "info",
+				message: "model request started · OpenAI/gpt-4.1",
+				details: {
+					event: "ModelRequestStarted",
+					run_id: "r1",
+					model: "gpt-4.1",
+					model_provider: "OpenAI",
+				},
+			},
+		]);
+	});
 });

@@ -16,6 +16,13 @@ export async function maybeStartAgnoSidecar(
 	runtime: RuntimeHost,
 ): Promise<ManagedSidecar | undefined> {
 	if (config.defaultAdapter !== "agno") return undefined;
+	return startAgnoSidecar(config, runtime);
+}
+
+export async function startAgnoSidecar(
+	config: TreeConfig,
+	runtime: RuntimeHost,
+): Promise<ManagedSidecar | undefined> {
 	const agno = config.adapters.agno;
 	if (agno?.sidecarAutoStart === false) return undefined;
 

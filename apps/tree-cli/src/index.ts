@@ -13,7 +13,11 @@ import {
 	type TreeEvent,
 } from "@tree/core";
 import { TreeTuiApp } from "@tree/tui";
-import { maybeStartAgnoSidecar } from "./agno-sidecar.js";
+import {
+	type ManagedSidecar,
+	maybeStartAgnoSidecar,
+	startAgnoSidecar,
+} from "./agno-sidecar.js";
 
 interface CliArgs {
 	configPath?: string;
@@ -73,7 +77,10 @@ async function main(argv: string[]): Promise<void> {
 
 	const pipedPrompt = !process.stdin.isTTY ? await readStdin() : undefined;
 	const prompt = args.prompt ?? pipedPrompt;
-	const sidecar = await maybeStartAgnoSidecar(config, runtime);
+	let agnoSidecar: ManagedSidecar | undefined = await maybeStartAgnoSidecar(
+		config,
+		runtime,
+	);
 	try {
 		if (args.listAgents) {
 			await listAgents(config, runtime, adapters);
@@ -99,7 +106,7 @@ async function main(argv: string[]): Promise<void> {
 				`loaded ${envLoad.loaded.length} env var(s) from ${envLoad.path}`,
 			);
 		}
-		if (sidecar?.notice) startupNotices.push(sidecar.notice);
+		if (agnoSidecar?.notice) startupNotices.push(agnoSidecar.notice);
 		if (args.yolo) {
 			startupNotices.push(
 				"YOLO mode · approvals auto-accepted, sandbox disabled. Tools run unrestricted.",
@@ -113,11 +120,32 @@ async function main(argv: string[]): Promise<void> {
 			initialPrompt: prompt,
 			yolo: args.yolo,
 			startupNotices,
+			onAdapterActivated: async (adapterId) => {
+				if (adapterId !== "agno" || agnoSidecar) return undefined;
+				agnoSidecar = await startAgnoSidecar(config, runtime);
+				return agnoSidecar?.notice;
+			},
+			onWorkspaceEnvChanged: async ({ activeAdapter }) => {
+				if (activeAdapter !== "agno") return undefined;
+				await agnoSidecar?.stop();
+				agnoSidecar = await startAgnoSidecar(config, runtime);
+				return restartNotice(agnoSidecar?.notice);
+			},
 		});
 		await app.run();
 	} finally {
-		await sidecar?.stop();
+		await agnoSidecar?.stop();
 	}
+}
+
+function restartNotice(notice: string | undefined): string {
+	if (!notice) return "Agno AgentOS auto-start is disabled.";
+	if (notice.startsWith("started "))
+		return notice.replace("started ", "restarted ");
+	if (notice.startsWith("using existing ")) {
+		return notice.replace("using existing ", "reconnected to existing ");
+	}
+	return notice;
 }
 
 function parseArgs(argv: string[]): CliArgs {
